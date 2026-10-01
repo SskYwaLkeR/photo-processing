@@ -147,12 +147,19 @@ It finishes by running `pnpm check`. Each run is saved to `loadtest-results/`.
 
 **Suggested scaling walk-through:** run with `convert=1 compress=1 variants=1`, and the Pipeline tab shows convert's oldest wait climbing (convert runs one task per replica). Then `pnpm scale convert=3` in another terminal. The backlog drains faster and the bottleneck moves downstream.
 
-**Results** (MacBook, eu-central-1 bucket, 1 replica per stage vs. scaled):
+**Results** (MacBook on home broadband, eu-central-1 bucket):
 
-| Run | Images | Replicas (convert/compress/variants) | Throughput | e2e p50 / p95 / p99 | 429s |
-|---|---|---|---|---|---|
-| _to fill in_ | | 1/1/1 | | | |
-| _to fill in_ | | 3/1/2 | | | |
+| Run | Setup | Outcome | What it shows |
+|---|---|---|---|
+| A | 100 images, `-c 20 -u 5`, replicas 1/1/1, **compress accidentally offline for the first ~7.5 min** | 100/100 completed, 0 errors, 0 retries | **Nothing is lost when a stage is down.** The compress queue grew to 100 (oldest wait 472s) while convert kept going: 100 images in 57s, ≈1.75/s, p50 0.49s / p95 0.95s per image. Once one compress replica started, it cleared the backlog in 27s, and the whole pipeline drained 44s later. Stage p95: convert 0.95s, compress 0.76s, variants 1.08s |
+| B | 100 images, `-c 20 -u 5`, replicas 3/1/2 | 98/100 completed (2 S3 upload timeouts, see below) | **Convert is the bottleneck.** Its queue peaked at 91 images with the oldest waiting 78s. Throughput 0.81/s, e2e p50 68s / p95 93s / p99 106s |
+| C | 150 images, `-c 40 -u 10`, replicas 3/1/2, `GLOBAL_MAX_IN_FLIGHT=40` | 149/150 completed, **529 × 429 `PIPELINE_BUSY`** | **Backpressure works, and the bottleneck moves.** Admission shed load at the edge, the client backed off and retried. With 3 convert replicas, convert's oldest wait fell to 22s and **compress (1 replica) became the bottleneck** (52 queued, 35s). Throughput 1.05/s, e2e p50 64s / p95 96s / p99 121s |
+
+Runs B and C had per-stage p95 around 3–7s, against under 1s in run A. In B and C, 20–40 concurrent client uploads were competing with the workers' S3 reads and writes for the same home uplink, and 3 uploads hit S3 `RequestTimeout`. That led to two fixes:
+- the load test now retries transient transport errors with backoff, the way a real client would
+- client errors are recorded in the report
+
+The 3 abandoned `UPLOADING` rows are cleaned up by the API's abandoned-upload sweeper after 1 hour.
 
 **What this proves:**
 - correctness under concurrency: invariants hold after hundreds of overlapping tasks

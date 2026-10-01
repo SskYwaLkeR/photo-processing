@@ -149,7 +149,7 @@ The chain, from edge to core:
    `SHARP_THREADS` cap, and the S3 object size is capped before it's buffered.
 4. **The client.** The load test (and any well-behaved client) honours `Retry-After` with jitter.
 
-**What happens at each volume** (local, 1 replica per stage, ~3 images/s):
+**What happens at each volume** (local, 1 replica per stage. Measured: convert ≈1.75 images/s when it's the bottleneck, compress ≈3.8/s, variants ≈2.3/s; see the README results):
 
 | Arrivals | What you see |
 |---|---|
