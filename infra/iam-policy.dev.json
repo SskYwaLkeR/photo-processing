@@ -1,0 +1,29 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ObjectAccessForAppPrefixesOnly",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+      "Resource": [
+        "arn:aws:s3:::aragon-photos-demo/raw/*",
+        "arn:aws:s3:::aragon-photos-demo/processed/*",
+        "arn:aws:s3:::aragon-photos-demo/thumb/*",
+        "arn:aws:s3:::aragon-photos-demo/originals/*",
+        "arn:aws:s3:::aragon-photos-demo/work/*",
+        "arn:aws:s3:::aragon-photos-demo/variants/*"
+      ]
+    },
+    {
+      "Sid": "ListSoHeadObjectReturns404NotForbidden",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::aragon-photos-demo",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": ["raw/*", "processed/*", "thumb/*", "originals/*", "work/*", "variants/*"]
+        }
+      }
+    }
+  ]
+}

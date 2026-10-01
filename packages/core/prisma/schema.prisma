@@ -1,0 +1,185 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// User-facing lifecycle. The fine-grained state (QUEUED_COMPRESSION, COMPRESSING, …) is derived
+/// from `stage` + the image's active task, see core/src/stages.ts.
+enum ImageStatus {
+  UPLOADING // row created, presigned POST issued, bytes not confirmed yet
+  PROCESSING // validated, one task is QUEUED or RUNNING for `stage`
+  COMPLETE // all three variants exist for the current run
+  FAILED // the pipeline stopped at `error_stage`, see error_code
+  REJECTED // failed validation at /complete, never entered the pipeline
+}
+
+enum Stage {
+  CONVERT
+  COMPRESS
+  VARIANTS
+}
+
+enum TaskStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+}
+
+enum VariantName {
+  THUMB
+  WEB
+  FULL
+}
+
+model User {
+  id        String   @id @db.Uuid
+  createdAt DateTime @db.Timestamptz(3) @default(now()) @map("created_at")
+  images    Image[]
+
+  @@map("users")
+}
+
+/// All timestamps are timestamptz: raw SQL uses now() and Prisma writes UTC; plain `timestamp`
+/// would store the session-local time for one and UTC for the other.
+model Image {
+  id     String      @id @default(uuid()) @db.Uuid
+  userId String      @map("user_id") @db.Uuid
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status ImageStatus @default(UPLOADING)
+  stage  Stage? // current stage while PROCESSING, last stage reached otherwise
+
+  /// Fencing token. Bumped by every reprocess; a write from a task of an older run is a no-op.
+  run             Int     @default(0)
+  /// Code/config version that produced the current outputs, so "reprocess everything made by v1" is a query.
+  pipelineVersion String? @map("pipeline_version") @db.VarChar(20)
+  /// Client-supplied Idempotency-Key on POST /images: a retried submit returns the same image.
+  idempotencyKey  String? @map("idempotency_key") @db.VarChar(100)
+
+  originalFilename String @map("original_filename") @db.VarChar(255) // display only, never used in keys
+  declaredMime     String @map("declared_mime") @db.VarChar(100) // what the browser claimed, never trusted
+  declaredBytes    Int    @map("declared_bytes")
+  originalKey      String @map("original_key") // originals/{userId}/{id}
+
+  // CONVERT outputs
+  originalFormat  String? @map("original_format") @db.VarChar(10) // jpeg | png | heic, from magic bytes
+  originalBytes   Int?    @map("original_bytes")
+  width           Int?
+  height          Int?
+  normalizedKey   String? @map("normalized_key")
+  normalizedBytes Int?    @map("normalized_bytes")
+
+  // COMPRESS outputs
+  masterKey          String? @map("master_key")
+  compressedBytes    Int?    @map("compressed_bytes")
+  compressionRatio   Float?  @map("compression_ratio") // compressed_bytes / original_bytes
+  compressionQuality Int?    @map("compression_quality")
+
+  // Failure (FAILED or REJECTED). error_message is the curated user-facing text; raw errors stay in tasks.last_error.
+  errorStage   Stage?   @map("error_stage")
+  errorCode    String?  @map("error_code") @db.VarChar(40)
+  errorMessage String?  @map("error_message") @db.VarChar(500)
+  retryable    Boolean?
+
+  createdAt   DateTime @db.Timestamptz(3)  @default(now()) @map("created_at")
+  updatedAt   DateTime @db.Timestamptz(3)  @updatedAt @map("updated_at")
+  completedAt DateTime? @db.Timestamptz(3) @map("completed_at")
+
+  tasks    Task[]
+  variants Variant[]
+  events   ImageEvent[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  // Add in the migration SQL (Prisma can't express CHECK constraints or partial indexes):
+  // ALTER TABLE images ADD CONSTRAINT images_failure_has_reason
+  //   CHECK (status NOT IN ('FAILED', 'REJECTED') OR (error_code IS NOT NULL AND error_message IS NOT NULL));
+  // ALTER TABLE images ADD CONSTRAINT images_failed_has_stage CHECK (status <> 'FAILED' OR error_stage IS NOT NULL);
+  // CREATE INDEX images_in_flight_idx ON images (user_id) WHERE status IN ('UPLOADING', 'PROCESSING');
+  @@map("images")
+}
+
+/// One row per (image, run, stage): the row is the job. Workers claim with FOR UPDATE SKIP LOCKED.
+model Task {
+  id      String     @id @default(uuid()) @db.Uuid
+  imageId String     @map("image_id") @db.Uuid
+  image   Image      @relation(fields: [imageId], references: [id], onDelete: Cascade)
+  run     Int
+  stage   Stage
+  status  TaskStatus @default(QUEUED)
+
+  attempts    Int       @default(0)
+  availableAt DateTime @db.Timestamptz(3)  @default(now()) @map("available_at") // retry backoff: not claimable before this
+  lockedAt    DateTime? @db.Timestamptz(3) @map("locked_at") // lease, renewed by the worker's heartbeat
+  lockedBy    String?   @map("locked_by") @db.VarChar(100) // worker id, part of the fencing check
+  lastError   String?   @map("last_error") @db.VarChar(1000) // internal, never returned to users
+
+  createdAt  DateTime @db.Timestamptz(3)  @default(now()) @map("created_at")
+  startedAt  DateTime? @db.Timestamptz(3) @map("started_at")
+  finishedAt DateTime? @db.Timestamptz(3) @map("finished_at")
+  durationMs Int?      @map("duration_ms")
+
+  /// A duplicate enqueue (redelivery, double reprocess) is an ON CONFLICT no-op, not a second task.
+  @@unique([imageId, run, stage])
+  @@index([stage, status, finishedAt])
+  // Add in the migration SQL:
+  // -- at most one QUEUED/RUNNING task per image, enforced by the database
+  // CREATE UNIQUE INDEX tasks_one_active_per_image ON tasks (image_id) WHERE status IN ('QUEUED', 'RUNNING');
+  // -- the claim scan only ever touches active rows, so it stays tiny however big the table grows
+  // CREATE INDEX tasks_claim_idx ON tasks (stage, available_at) WHERE status IN ('QUEUED', 'RUNNING');
+  @@map("tasks")
+}
+
+/// Primary key (image_id, name): reprocessing upserts, it can never add a fourth row.
+model Variant {
+  imageId String      @map("image_id") @db.Uuid
+  image   Image       @relation(fields: [imageId], references: [id], onDelete: Cascade)
+  name    VariantName
+  run     Int
+  key     String // variants/{userId}/{imageId}/{name}.jpg, deterministic
+  format  String      @db.VarChar(10)
+  width   Int
+  height  Int
+  bytes   Int
+
+  createdAt DateTime @db.Timestamptz(3) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(3) @updatedAt @map("updated_at")
+
+  @@id([imageId, name])
+  @@map("variants")
+}
+
+/// Append-only timeline, written in the same transaction as each transition.
+model ImageEvent {
+  id      BigInt   @id @default(autoincrement())
+  imageId String   @map("image_id") @db.Uuid
+  image   Image    @relation(fields: [imageId], references: [id], onDelete: Cascade)
+  run     Int
+  stage   Stage?
+  type    String   @db.VarChar(40)
+  detail  String?  @db.VarChar(500)
+  at      DateTime @db.Timestamptz(3) @default(now())
+
+  @@index([imageId, id])
+  @@map("image_events")
+}
+
+/// Liveness registry: each worker replica upserts its row every few seconds. Only used for the
+/// operator view (replica counts) — correctness never depends on it, leases do that.
+model Worker {
+  id          String   @id @db.VarChar(100)
+  stage       Stage
+  pid         Int
+  concurrency Int
+  inFlight    Int      @default(0) @map("in_flight")
+  draining    Boolean  @default(false)
+  startedAt   DateTime @db.Timestamptz(3) @default(now()) @map("started_at")
+  heartbeatAt DateTime @db.Timestamptz(3) @default(now()) @map("heartbeat_at")
+
+  @@index([stage, heartbeatAt])
+  @@map("workers")
+}

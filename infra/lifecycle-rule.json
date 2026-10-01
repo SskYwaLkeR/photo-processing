@@ -1,0 +1,6 @@
+{
+  "ID": "expire-pipeline-intermediates",
+  "Status": "Enabled",
+  "Filter": { "Prefix": "work/" },
+  "Expiration": { "Days": 7 }
+}

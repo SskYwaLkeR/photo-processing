@@ -1,0 +1,48 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PresignUploadsAndValidate",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::aragon-photos-demo/originals/*"
+      ]
+    },
+    {
+      "Sid": "PresignVariantReads",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::aragon-photos-demo/variants/*"
+    },
+    {
+      "Sid": "HeadReturns404",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::aragon-photos-demo",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "originals/*",
+            "work/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ResumeChecks",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::aragon-photos-demo/work/*"
+    },
+    {
+      "Sid": "SweepAbandonedUploads",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObject",
+      "Resource": "arn:aws:s3:::aragon-photos-demo/originals/*"
+    }
+  ]
+}

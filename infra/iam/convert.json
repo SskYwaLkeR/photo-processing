@@ -1,0 +1,30 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadUntrustedOriginals",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::aragon-photos-demo/originals/*"
+    },
+    {
+      "Sid": "WriteNormalizedOnly",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::aragon-photos-demo/work/*/*/normalized.jpg"
+    },
+    {
+      "Sid": "MissingIs404",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::aragon-photos-demo",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "originals/*"
+          ]
+        }
+      }
+    }
+  ]
+}

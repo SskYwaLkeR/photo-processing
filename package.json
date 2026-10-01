@@ -1,0 +1,30 @@
+{
+  "name": "aragon-media-pipeline",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web,workers -c green,cyan,magenta \"pnpm --filter api dev\" \"pnpm --filter web dev\" \"pnpm scale convert=1 compress=1 variants=1\"",
+    "api": "pnpm --filter api dev",
+    "web": "pnpm --filter web dev",
+    "scale": "tsx scripts/scale.ts",
+    "loadtest": "tsx scripts/loadtest.ts",
+    "check": "tsx scripts/check.ts",
+    "fixtures": "node scripts/make-fixtures.mjs",
+    "db:migrate": "pnpm --filter @pipeline/core db:migrate",
+    "db:generate": "pnpm --filter @pipeline/core db:generate",
+    "typecheck": "pnpm -r typecheck && tsc -p tsconfig.scripts.json",
+    "test": "pnpm -r test"
+  },
+  "devDependencies": {
+    "@pipeline/core": "workspace:*",
+    "@types/node": "^22.18.0",
+    "concurrently": "^9.2.1",
+    "sharp": "^0.35.4",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3"
+  }
+}
